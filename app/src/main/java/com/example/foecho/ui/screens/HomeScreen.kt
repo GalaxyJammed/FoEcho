@@ -130,6 +130,9 @@ import java.util.Locale
 import kotlin.math.max
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.IconButton
+import com.example.foecho.data.EditedSegment
+import com.example.foecho.data.loadEdits
+import com.example.foecho.data.saveEdits
 
 private val TealAccent = Color(0xFF2EC4B0)
 private val DangerRed = Color(0xFFD32F2F)
@@ -194,6 +197,8 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
     var memosVersion by remember { mutableIntStateOf(0) }
 
     var categories by remember { mutableStateOf(loadCategories(context)) }
+    var edits by remember { mutableStateOf(loadEdits(context)) }
+    val editedIds = edits.map { it.outputId() }.toSet()
     var favorites by remember { mutableStateOf(loadFavorites(context)) }
     var sortOption by remember { mutableStateOf(loadSort(context)) }
     var showSort by remember { mutableStateOf(false) }
@@ -305,6 +310,8 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
             memos = memos.filterNot { it.id.toString() in pendingMemoDeletes }
+            edits = edits.filterNot { it.outputId() in pendingMemoDeletes }
+            saveEdits(context, edits)
         }
         pendingMemoDeletes = emptySet()
         selectedKeys = emptySet()
@@ -453,6 +460,8 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
                     }.getOrDefault(false)
                 }.toSet()
                 memos = memos.filterNot { it.id.toString() in deleted }
+                edits = edits.filterNot { it.outputId() in deleted }
+                saveEdits(context, edits)
                 if (deleted.size < keys.size) {
                     Toast.makeText(context, "Some files couldn't be deleted", Toast.LENGTH_SHORT).show()
                 }
@@ -732,7 +741,25 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
                             PermissionCard(onAllow = { permissionLauncher.launch(permission) })
                         }
                     }
-                    Tab.Edited -> EmptyText("No edited audios yet.")
+                    Tab.Edited -> AudioList(
+                        list = memos
+                            .filter { it.id.toString() in editedIds }
+                            .map { it.toItem() }
+                            .applySort(sortOption, preciseMs)
+                            .matching(searchQuery),
+                        emptyText = emptyFor("No edited audios yet."),
+                        selectionMode = selectionMode,
+                        selectedKeys = selectedKeys,
+                        onLongPress = { key -> selectedKeys = selectedKeys + key },
+                        onSelectTap = { key ->
+                            selectedKeys = if (key in selectedKeys) selectedKeys - key else selectedKeys + key
+                        },
+                        stopSignal = stopPlaybackSignal,
+                        onPlayingChange = { playingAny = it },
+                        favorites = favorites,
+                        sortKey = sortOption,
+                        durations = preciseMs
+                    )
                     Tab.Favorites -> AudioList(
                         list = favoriteItems,
                         emptyText = emptyFor("No favorites yet. Hold a recording and tap the star."),
@@ -1345,3 +1372,6 @@ private fun formatDuration(ms: Long): String {
     val totalSeconds = (ms + 999) / 1000
     return "%d:%02d".format(totalSeconds / 60, totalSeconds % 60)
 }
+
+private fun EditedSegment.outputId(): String =
+    Uri.parse(outputUri).lastPathSegment.orEmpty()

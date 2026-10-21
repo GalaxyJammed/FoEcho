@@ -71,9 +71,10 @@ fun exportSegment(
     sourceName: String,
     partName: String,
     startMs: Long,
-    endMs: Long
+    endMs: Long,
+    onProgress: (Float) -> Unit = {}
 ): String? {
-    val pcm = decodeRange(context, source, startMs, endMs) ?: return null
+    val pcm = decodeRange(context, source, startMs, endMs, onProgress) ?: return null
     val base = sanitizeName("$sourceName - $partName").ifBlank { "FoEcho_Part" }
     val resolver = context.contentResolver
     val values = ContentValues().apply {
@@ -85,7 +86,7 @@ fun exportSegment(
     val uri = resolver.insert(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values) ?: return null
     val ok = runCatching {
         resolver.openFileDescriptor(uri, "w")!!.use { pfd ->
-            encodePcm(pcm.bytes, pcm.sampleRate, pcm.channels, pfd)
+            encodePcm(pcm.bytes, pcm.sampleRate, pcm.channels, pfd, onProgress)
         }
     }.isSuccess
     if (!ok) {
@@ -98,6 +99,7 @@ fun exportSegment(
         null,
         null
     )
+    onProgress(1f)
     return uri.toString()
 }
 
@@ -106,7 +108,13 @@ private fun sanitizeName(name: String): String =
 
 private class DecodedPcm(val bytes: ByteArray, val sampleRate: Int, val channels: Int)
 
-private fun decodeRange(context: Context, uri: Uri, startMs: Long, endMs: Long): DecodedPcm? {
+private fun decodeRange(
+    context: Context,
+    uri: Uri,
+    startMs: Long,
+    endMs: Long,
+    onProgress: (Float) -> Unit
+): DecodedPcm? {
     val extractor = MediaExtractor()
     var codec: MediaCodec? = null
     try {
@@ -119,6 +127,7 @@ private fun decodeRange(context: Context, uri: Uri, startMs: Long, endMs: Long):
         val mime = format.getString(MediaFormat.KEY_MIME) ?: return null
         val startUs = startMs * 1000L
         val endUs = endMs * 1000L
+        val spanUs = (endUs - startUs).coerceAtLeast(1L).toFloat()
         extractor.seekTo(startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
 
         val decoder = MediaCodec.createDecoderByType(mime)
@@ -175,6 +184,8 @@ private fun decodeRange(context: Context, uri: Uri, startMs: Long, endMs: Long):
                                 out.write(bytes)
                             }
                         }
+                        val done = ((info.presentationTimeUs - startUs) / spanUs).coerceIn(0f, 1f)
+                        onProgress(done * 0.5f)
                     }
                     if (info.presentationTimeUs >= endUs ||
                         (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
@@ -198,7 +209,13 @@ private fun decodeRange(context: Context, uri: Uri, startMs: Long, endMs: Long):
     }
 }
 
-private fun encodePcm(pcm: ByteArray, sampleRate: Int, channels: Int, pfd: ParcelFileDescriptor) {
+private fun encodePcm(
+    pcm: ByteArray,
+    sampleRate: Int,
+    channels: Int,
+    pfd: ParcelFileDescriptor,
+    onProgress: (Float) -> Unit
+) {
     val frameBytes = 2 * channels
     val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channels).apply {
         setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
@@ -234,6 +251,7 @@ private fun encodePcm(pcm: ByteArray, sampleRate: Int, channels: Int, pfd: Parce
                         encoder.queueInputBuffer(inIndex, 0, n, framesSent * 1_000_000L / sampleRate, 0)
                         framesSent += n / frameBytes
                         inOffset += n
+                        onProgress(0.5f + 0.5f * inOffset.toFloat() / pcm.size)
                     }
                 }
             }

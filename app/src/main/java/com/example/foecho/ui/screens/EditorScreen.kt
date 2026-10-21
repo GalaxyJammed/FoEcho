@@ -5,30 +5,39 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.foecho.data.AudioInfo
 import com.example.foecho.data.EditedSegment
 import com.example.foecho.data.exportSegment
 import com.example.foecho.data.loadAudioInfo
 import com.example.foecho.data.loadEdits
+import com.example.foecho.data.renameRecording
 import com.example.foecho.data.saveEdits
 import com.example.foecho.ui.components.ScreenHeader
 import com.example.foecho.ui.components.ShieldCard
@@ -40,13 +49,16 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import kotlin.math.abs
+import androidx.compose.material3.LinearProgressIndicator
 
 val LocalEditRequest = compositionLocalOf<(String, String, Long) -> Unit> { { _, _, _ -> } }
 
 private val TealAccent = Color(0xFF2EC4B0)
+private val SeparatorYellow = Color(0xFFFFC107)
+private val DangerRed = Color(0xFFD32F2F)
 private val MinPartMs = 1000L
-
-private enum class Side { Left, Right }
+private const val MaxLines = 5
 
 @Composable
 fun EditorScreen(uri: String, name: String, dateCreated: Long, onBack: () -> Unit) {
@@ -63,13 +75,18 @@ fun EditorScreen(uri: String, name: String, dateCreated: Long, onBack: () -> Uni
     val segments = allEdits.filter { it.sourceUri == uri }
 
     var playhead by remember { mutableLongStateOf(0L) }
+    var lines by remember { mutableStateOf<List<Long>>(emptyList()) }
     var player by remember { mutableStateOf<MediaPlayer?>(null) }
     var playing by remember { mutableStateOf(false) }
     var segPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     var segPlayingId by remember { mutableStateOf<String?>(null) }
-    var pendingSide by remember { mutableStateOf<Side?>(null) }
+    var pendingRange by remember { mutableStateOf<Pair<Long, Long>?>(null) }
     var partName by remember { mutableStateOf("") }
     var saving by remember { mutableStateOf(false) }
+    var saveProgress by remember { mutableFloatStateOf(0f) }
+    var renameTarget by remember { mutableStateOf<EditedSegment?>(null) }
+    var renameText by remember { mutableStateOf("") }
+    var deleteTarget by remember { mutableStateOf<EditedSegment?>(null) }
     var widthPx by remember { mutableFloatStateOf(1f) }
 
     fun stopMain() {
@@ -156,13 +173,17 @@ fun EditorScreen(uri: String, name: String, dateCreated: Long, onBack: () -> Uni
         onDispose { stopAll() }
     }
 
-    val leftOk = playhead >= MinPartMs
-    val rightOk = total - playhead >= MinPartMs
+    val bounds = listOf(0L) + lines + listOf(total)
+    val regions = bounds.zipWithNext()
+    val canAddLine = total > 0L &&
+            lines.size < MaxLines &&
+            playhead >= MinPartMs &&
+            total - playhead >= MinPartMs &&
+            lines.none { abs(it - playhead) < MinPartMs }
 
-    pendingSide?.let { side ->
-        val (start, end) = if (side == Side.Left) 0L to playhead else playhead to total
+    pendingRange?.takeIf { !saving }?.let { (start, end) ->
         AlertDialog(
-            onDismissRequest = { if (!saving) pendingSide = null },
+            onDismissRequest = { if (!saving) pendingRange = null },
             title = { Text("Name this part") },
             text = {
                 Column {
@@ -185,17 +206,34 @@ fun EditorScreen(uri: String, name: String, dateCreated: Long, onBack: () -> Uni
                     onClick = {
                         val part = partName.trim()
                         saving = true
+                        saveProgress = 0f
                         scope.launch {
+                            val existing = allEdits.firstOrNull {
+                                it.sourceUri == uri && it.startMs == start && it.endMs == end
+                            }
                             val out = withContext(Dispatchers.IO) {
-                                exportSegment(context, audioUri, sourceName, part, start, end)
+                                val created = exportSegment(
+                                    context,
+                                    audioUri,
+                                    sourceName,
+                                    part,
+                                    start,
+                                    end
+                                ) { p -> scope.launch { saveProgress = p } }
+                                if (created != null && existing != null) {
+                                    runCatching {
+                                        context.contentResolver.delete(Uri.parse(existing.outputUri), null, null)
+                                    }
+                                }
+                                created
                             }
                             saving = false
-                            pendingSide = null
+                            pendingRange = null
                             if (out == null) {
                                 Toast.makeText(context, "Couldn't save this part", Toast.LENGTH_SHORT).show()
                             } else {
                                 val seg = EditedSegment(
-                                    id = UUID.randomUUID().toString(),
+                                    id = existing?.id ?: UUID.randomUUID().toString(),
                                     sourceUri = uri,
                                     sourceName = sourceName,
                                     partName = part,
@@ -203,7 +241,7 @@ fun EditorScreen(uri: String, name: String, dateCreated: Long, onBack: () -> Uni
                                     endMs = end,
                                     outputUri = out
                                 )
-                                allEdits = allEdits + seg
+                                allEdits = allEdits.filterNot { it.id == seg.id } + seg
                                 saveEdits(context, allEdits)
                                 Toast.makeText(context, "Saved $part", Toast.LENGTH_SHORT).show()
                             }
@@ -214,7 +252,110 @@ fun EditorScreen(uri: String, name: String, dateCreated: Long, onBack: () -> Uni
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pendingSide = null }, enabled = !saving) {
+                TextButton(onClick = { pendingRange = null }, enabled = !saving) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+    if (saving) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Saving part") },
+            text = {
+                Column {
+                    LinearProgressIndicator(
+                        progress = { saveProgress },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "${(saveProgress * 100).toInt()}%",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            },
+            confirmButton = {}
+        )
+    }
+
+    renameTarget?.let { seg ->
+        AlertDialog(
+            onDismissRequest = { renameTarget = null },
+            title = { Text("Rename part") },
+            text = {
+                OutlinedTextField(
+                    value = renameText,
+                    onValueChange = { renameText = it },
+                    label = { Text("Part name") },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = renameText.isNotBlank(),
+                    onClick = {
+                        val newPart = renameText.trim()
+                        val renamed = renameRecording(
+                            context,
+                            Uri.parse(seg.outputUri),
+                            "${seg.sourceName} - $newPart"
+                        )
+                        if (renamed) {
+                            allEdits = allEdits.map {
+                                if (it.id == seg.id) it.copy(partName = newPart) else it
+                            }
+                            saveEdits(context, allEdits)
+                            Toast.makeText(context, "Renamed", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "Couldn't rename this part", Toast.LENGTH_SHORT).show()
+                        }
+                        renameTarget = null
+                    }
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameTarget = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    deleteTarget?.let { seg ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text("Delete part") },
+            text = { Text("Delete \"${seg.partName}\" from your device? This can't be undone.") },
+            confirmButton = {
+                TextButton(
+                    colors = ButtonDefaults.textButtonColors(contentColor = DangerRed),
+                    onClick = {
+                        deleteTarget = null
+                        if (segPlayingId == seg.id) stopSeg()
+                        scope.launch {
+                            val deleted = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    context.contentResolver.delete(Uri.parse(seg.outputUri), null, null) > 0
+                                }.getOrDefault(false)
+                            }
+                            if (deleted) {
+                                allEdits = allEdits.filterNot { it.id == seg.id }
+                                saveEdits(context, allEdits)
+                                Toast.makeText(context, "Part deleted", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "Couldn't delete this part", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) {
                     Text("Cancel")
                 }
             }
@@ -247,19 +388,11 @@ fun EditorScreen(uri: String, name: String, dateCreated: Long, onBack: () -> Uni
             item {
                 ShieldCard {
                     Column(Modifier.padding(16.dp)) {
-                        Text("Length: ${formatTime(total)}", style = MaterialTheme.typography.bodyLarge)
-                        Spacer(Modifier.height(4.dp))
                         Text(
-                            "Created: ${formatDate(dateCreated)}",
-                            style = MaterialTheme.typography.bodyMedium
+                            "Tap the waveform to move the line. Add up to $MaxLines lines, then tap a part below to name and save it.",
+                            style = MaterialTheme.typography.bodySmall
                         )
-                    }
-                }
-            }
-
-            item {
-                ShieldCard {
-                    Column(Modifier.padding(16.dp)) {
+                        Spacer(Modifier.height(10.dp))
                         val bars = info?.bars
                         Box(
                             Modifier
@@ -295,6 +428,17 @@ fun EditorScreen(uri: String, name: String, dateCreated: Long, onBack: () -> Uni
                                             cap = StrokeCap.Round
                                         )
                                     }
+                                    if (total > 0L) {
+                                        lines.forEach { line ->
+                                            val x = size.width * line / total
+                                            drawLine(
+                                                color = SeparatorYellow,
+                                                start = Offset(x, 0f),
+                                                end = Offset(x, size.height),
+                                                strokeWidth = 2.dp.toPx()
+                                            )
+                                        }
+                                    }
                                     drawLine(
                                         color = Color.White,
                                         start = Offset(split, 0f),
@@ -316,33 +460,111 @@ fun EditorScreen(uri: String, name: String, dateCreated: Long, onBack: () -> Uni
                                 "${formatTime(playhead)} / ${formatTime(total)}",
                                 style = MaterialTheme.typography.bodyMedium
                             )
+                            Spacer(Modifier.weight(1f))
+                            Button(
+                                onClick = { lines = (lines + playhead).sorted() },
+                                enabled = canAddLine && !saving
+                            ) {
+                                Text("Add Line")
+                            }
                         }
                         Spacer(Modifier.height(8.dp))
-                        Text(
-                            "Tap the waveform to place the line, then split at it.",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Button(
-                                onClick = {
-                                    pendingSide = Side.Left
-                                    partName = "Part ${segments.size + 1}"
-                                },
-                                enabled = leftOk && !saving && total > 0L,
-                                modifier = Modifier.weight(1f)
+                        if (total > 0L) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(56.dp)
+                                    .clip(RoundedCornerShape(10.dp))
                             ) {
-                                Text("Left part")
+                                regions.forEachIndexed { i, (start, end) ->
+                                    val saved = segments.firstOrNull { it.startMs == start && it.endMs == end }
+                                    val defaultName = "Part ${i + 1}"
+                                    val shade = if (i % 2 == 0) {
+                                        TealAccent.copy(alpha = 0.35f)
+                                    } else {
+                                        TealAccent.copy(alpha = 0.55f)
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .fillMaxHeight()
+                                            .background(shade)
+                                            .clickable {
+                                                if (end - start < MinPartMs) {
+                                                    Toast.makeText(
+                                                        context,
+                                                        "This part is too short to save",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                } else {
+                                                    partName = saved?.partName ?: defaultName
+                                                    pendingRange = start to end
+                                                }
+                                            }
+                                            .padding(horizontal = 4.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            Text(
+                                                text = saved?.partName ?: defaultName,
+                                                style = MaterialTheme.typography.labelMedium,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = formatTime(end - start),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+                                }
                             }
-                            Button(
-                                onClick = {
-                                    pendingSide = Side.Right
-                                    partName = "Part ${segments.size + 1}"
-                                },
-                                enabled = rightOk && !saving && total > 0L,
-                                modifier = Modifier.weight(1f)
+                        }
+                        if (lines.isNotEmpty()) {
+                            Spacer(Modifier.height(6.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(56.dp)
+                                    .clip(RoundedCornerShape(10.dp))
                             ) {
-                                Text("Right part")
+                                lines.forEachIndexed { i, line ->
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .fillMaxHeight()
+                                            .background(
+                                                if (i % 2 == 0) SeparatorYellow.copy(alpha = 0.25f)
+                                                else SeparatorYellow.copy(alpha = 0.45f)
+                                            )
+                                            .clickable { seekTo(line) }
+                                            .padding(horizontal = 4.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            Text(
+                                                text = "Line ${i + 1}",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = formatTime(line),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (lines.isNotEmpty()) {
+                            TextButton(
+                                onClick = { lines = emptyList() },
+                                colors = ButtonDefaults.textButtonColors(contentColor = DangerRed)
+                            ) {
+                                Text("Clear lines")
                             }
                         }
                     }
@@ -365,7 +587,7 @@ fun EditorScreen(uri: String, name: String, dateCreated: Long, onBack: () -> Uni
             items(segments, key = { it.id }) { seg ->
                 ShieldCard {
                     Row(
-                        modifier = Modifier.padding(16.dp),
+                        modifier = Modifier.padding(start = 8.dp, top = 8.dp, bottom = 8.dp, end = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(onClick = { toggleSegment(seg) }) {
@@ -374,7 +596,6 @@ fun EditorScreen(uri: String, name: String, dateCreated: Long, onBack: () -> Uni
                                 contentDescription = if (segPlayingId == seg.id) "Pause" else "Play"
                             )
                         }
-                        Spacer(Modifier.width(8.dp))
                         Column(Modifier.weight(1f)) {
                             Text(
                                 "${seg.sourceName}: ${seg.partName}",
@@ -383,6 +604,19 @@ fun EditorScreen(uri: String, name: String, dateCreated: Long, onBack: () -> Uni
                             Text(
                                 formatTime(seg.endMs - seg.startMs),
                                 style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
+                        IconButton(onClick = {
+                            renameText = seg.partName
+                            renameTarget = seg
+                        }) {
+                            Icon(Icons.Filled.Edit, contentDescription = "Rename part")
+                        }
+                        IconButton(onClick = { deleteTarget = seg }) {
+                            Icon(
+                                Icons.Filled.Delete,
+                                contentDescription = "Delete part",
+                                tint = DangerRed
                             )
                         }
                     }
