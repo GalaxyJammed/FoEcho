@@ -10,8 +10,6 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -26,7 +24,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -45,12 +44,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.UUID
 import kotlin.math.abs
-import androidx.compose.material3.LinearProgressIndicator
 
 val LocalEditRequest = compositionLocalOf<(String, String, Long) -> Unit> { { _, _, _ -> } }
 
@@ -258,6 +253,7 @@ fun EditorScreen(uri: String, name: String, dateCreated: Long, onBack: () -> Uni
             }
         )
     }
+
     if (saving) {
         AlertDialog(
             onDismissRequest = {},
@@ -413,21 +409,15 @@ fun EditorScreen(uri: String, name: String, dateCreated: Long, onBack: () -> Uni
                                 )
                             } else {
                                 Canvas(Modifier.fillMaxSize()) {
-                                    val barW = size.width / bars.size
                                     val mid = size.height / 2f
                                     val split = if (total > 0L) size.width * playhead / total else 0f
-                                    val idle = Color.Gray.copy(alpha = 0.5f)
-                                    bars.forEachIndexed { i, amp ->
-                                        val half = (amp * size.height * 0.45f).coerceAtLeast(2f)
-                                        val x = i * barW + barW / 2f
-                                        drawLine(
-                                            color = if (x <= split) TealAccent else idle,
-                                            start = Offset(x, mid - half),
-                                            end = Offset(x, mid + half),
-                                            strokeWidth = barW * 0.5f,
-                                            cap = StrokeCap.Round
-                                        )
+                                    val path = buildEnvelope(bars, size.width, size.height)
+
+                                    drawPath(path, color = Color.Gray.copy(alpha = 0.5f))
+                                    clipRect(left = 0f, top = 0f, right = split, bottom = size.height) {
+                                        drawPath(path, color = TealAccent)
                                     }
+
                                     if (total > 0L) {
                                         lines.forEach { line ->
                                             val x = size.width * line / total
@@ -631,5 +621,44 @@ private fun formatTime(ms: Long): String {
     return "%d:%02d".format(totalSeconds / 60, totalSeconds % 60)
 }
 
-private fun formatDate(ms: Long): String =
-    if (ms <= 0L) "Unknown" else SimpleDateFormat("dd-MM-yyyy", Locale.US).format(Date(ms))
+private fun buildEnvelope(bars: FloatArray, width: Float, height: Float): Path {
+    val n = bars.size
+    val mid = height / 2f
+    val maxHalf = height * 0.45f
+    val kernel = floatArrayOf(1f, 2f, 3f, 2f, 1f)
+    val smooth = FloatArray(n) { i ->
+        var sum = 0f
+        var weight = 0f
+        for (k in kernel.indices) {
+            val j = i + k - 2
+            if (j in 0 until n) {
+                sum += bars[j] * kernel[k]
+                weight += kernel[k]
+            }
+        }
+        sum / weight
+    }
+    val xs = FloatArray(n) { i -> (i + 0.5f) * width / n }
+    val top = FloatArray(n) { i -> mid - (smooth[i] * maxHalf).coerceAtLeast(1f) }
+    val bottom = FloatArray(n) { i -> mid + (smooth[i] * maxHalf).coerceAtLeast(1f) }
+
+    val path = Path()
+    path.moveTo(0f, mid)
+    addCurve(path, xs, top)
+    path.lineTo(width, mid)
+    val reversedX = xs.reversedArray()
+    val reversedBottom = bottom.reversedArray()
+    addCurve(path, reversedX, reversedBottom)
+    path.close()
+    return path
+}
+
+private fun addCurve(path: Path, xs: FloatArray, ys: FloatArray) {
+    path.lineTo(xs[0], ys[0])
+    for (i in 1 until xs.size) {
+        val midX = (xs[i - 1] + xs[i]) / 2f
+        val midY = (ys[i - 1] + ys[i]) / 2f
+        path.quadraticTo(xs[i - 1], ys[i - 1], midX, midY)
+    }
+    path.lineTo(xs[xs.lastIndex], ys[ys.lastIndex])
+}

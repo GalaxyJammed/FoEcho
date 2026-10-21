@@ -15,8 +15,9 @@ import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 
-private const val BARS = 48
-private const val BLOCK = 1024
+private const val POINTS = 1200
+private const val MIN_BLOCK = 16
+private const val DEFAULT_BLOCK = 1024
 
 data class AudioInfo(val durationMs: Long, val bars: FloatArray)
 
@@ -50,7 +51,7 @@ private fun cacheFile(context: Context, key: String): File {
     val hash = MessageDigest.getInstance("SHA-256")
         .digest(key.toByteArray())
         .joinToString("") { "%02x".format(it) }
-    return File(dir, "$hash.txt")
+    return File(dir, "${hash}_v2_p$POINTS.txt")
 }
 
 private fun readDisk(file: File): AudioInfo? {
@@ -96,10 +97,25 @@ private fun decode(context: Context, uri: Uri): AudioInfo? {
         decoder.configure(format, null, null, 0)
         decoder.start()
 
-        var sampleRate = format.intOr(MediaFormat.KEY_SAMPLE_RATE, 44100)
-        var channels = format.intOr(MediaFormat.KEY_CHANNEL_COUNT, 1)
+        val rateGuess = format.intOr(MediaFormat.KEY_SAMPLE_RATE, 44100)
+        val channelsGuess = format.intOr(MediaFormat.KEY_CHANNEL_COUNT, 1)
+        val durationUs = if (format.containsKey(MediaFormat.KEY_DURATION)) {
+            format.getLong(MediaFormat.KEY_DURATION)
+        } else {
+            0L
+        }
+        val expectedSamples = durationUs * rateGuess / 1_000_000L * channelsGuess
+        val block = if (expectedSamples > 0L) {
+            (expectedSamples / POINTS).coerceAtLeast(MIN_BLOCK.toLong()).toInt()
+        } else {
+            DEFAULT_BLOCK
+        }
+
+        var sampleRate = rateGuess
+        var channels = channelsGuess
         var totalSamples = 0L
-        val peaks = ArrayList<Float>()
+        var peaks = FloatArray(POINTS + 16)
+        var peakCount = 0
         var blockMax = 0
         var blockCount = 0
         val info = MediaCodec.BufferInfo()
@@ -143,8 +159,9 @@ private fun decode(context: Context, uri: Uri): AudioInfo? {
                                 val value = abs(s.toInt())
                                 if (value > blockMax) blockMax = value
                                 blockCount++
-                                if (blockCount == BLOCK) {
-                                    peaks += blockMax / 32768f
+                                if (blockCount == block) {
+                                    if (peakCount == peaks.size) peaks = peaks.copyOf(peaks.size * 2)
+                                    peaks[peakCount++] = blockMax / 32768f
                                     blockMax = 0
                                     blockCount = 0
                                 }
@@ -157,8 +174,11 @@ private fun decode(context: Context, uri: Uri): AudioInfo? {
             }
         }
 
-        if (blockCount > 0) peaks += blockMax / 32768f
-        if (peaks.isEmpty()) return null
+        if (blockCount > 0) {
+            if (peakCount == peaks.size) peaks = peaks.copyOf(peaks.size * 2)
+            peaks[peakCount++] = blockMax / 32768f
+        }
+        if (peakCount == 0) return null
 
         val durationMs = if (sampleRate > 0 && channels > 0) {
             totalSamples * 1000L / (sampleRate.toLong() * channels)
@@ -166,23 +186,37 @@ private fun decode(context: Context, uri: Uri): AudioInfo? {
             0L
         }
 
-        val raw = FloatArray(BARS) { i ->
-            val start = i * peaks.size / BARS
-            val end = maxOf(start + 1, (i + 1) * peaks.size / BARS)
-            var max = 0f
-            for (k in start until minOf(end, peaks.size)) {
-                if (peaks[k] > max) max = peaks[k]
-            }
-            max
-        }
-        val top = raw.maxOrNull() ?: return null
+        val resampled = resample(peaks, peakCount, POINTS)
+        val top = resampled.maxOrNull() ?: return null
         if (top <= 0f) return null
-        return AudioInfo(durationMs, FloatArray(BARS) { raw[it] / top })
+        return AudioInfo(durationMs, FloatArray(POINTS) { resampled[it] / top })
     } finally {
         codec?.let {
             runCatching { it.stop() }
             it.release()
         }
         extractor.release()
+    }
+}
+
+private fun resample(peaks: FloatArray, count: Int, target: Int): FloatArray {
+    return if (count >= target) {
+        FloatArray(target) { i ->
+            val start = i * count / target
+            val end = maxOf(start + 1, (i + 1) * count / target)
+            var max = 0f
+            for (k in start until minOf(end, count)) {
+                if (peaks[k] > max) max = peaks[k]
+            }
+            max
+        }
+    } else {
+        FloatArray(target) { i ->
+            val pos = i * (count - 1).toFloat() / (target - 1).coerceAtLeast(1)
+            val lo = pos.toInt().coerceIn(0, count - 1)
+            val hi = (lo + 1).coerceAtMost(count - 1)
+            val frac = pos - lo
+            peaks[lo] * (1f - frac) + peaks[hi] * frac
+        }
     }
 }
