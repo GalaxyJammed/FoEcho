@@ -8,6 +8,7 @@
 ![Platform](https://img.shields.io/badge/Platform-Android-3DDC84?logo=android&logoColor=white)
 ![Min SDK](https://img.shields.io/badge/Min%20SDK-29-blue)
 ![GitHub release](https://img.shields.io/github/v/release/galaxyjammed/FoEcho?logo=github&label=GitHub%20release)
+![License](https://img.shields.io/badge/License-MIT-lightgrey?logo=mit)
 ![Project Status](https://img.shields.io/badge/Project%20Status-In%20Development-orange)
 
 ⭐ **If FoEcho helps you, please star this repository. It helps other users find the project.**
