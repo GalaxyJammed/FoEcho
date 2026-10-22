@@ -19,6 +19,8 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import android.app.Activity
+import androidx.core.app.ActivityCompat
 
 private const val RELEASES_URL = "https://api.github.com/repos/GalaxyJammed/FoEcho/releases/latest"
 private const val PREFS = "foecho_updates"
@@ -95,4 +97,24 @@ fun notifyUpdate(context: Context, release: ReleaseInfo) {
         .build()
     manager.notify(NOTIFICATION_ID, notification)
     prefs.edit().putString(KEY_NOTIFIED, release.version).apply()
+}
+
+object NotificationPermission {
+    const val REQUEST_CODE = 4201
+    private var onResult: ((Boolean) -> Unit)? = null
+
+    fun request(activity: Activity, callback: (Boolean) -> Unit) {
+        onResult = callback
+        ActivityCompat.requestPermissions(
+            activity,
+            arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+            REQUEST_CODE
+        )
+    }
+
+    fun handleResult(requestCode: Int, grantResults: IntArray) {
+        if (requestCode != REQUEST_CODE) return
+        onResult?.invoke(grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED)
+        onResult = null
+    }
 }

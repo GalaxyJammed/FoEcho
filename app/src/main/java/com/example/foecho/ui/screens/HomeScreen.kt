@@ -144,6 +144,7 @@ import com.example.foecho.data.installedVersion
 import com.example.foecho.data.isNewer
 import com.example.foecho.data.notifyUpdate
 import com.example.foecho.data.AppLock
+import com.example.foecho.data.NotificationPermission
 
 private val TealAccent = Color(0xFF2EC4B0)
 private val DangerRed = Color(0xFFD32F2F)
@@ -223,12 +224,6 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
     var confirm by remember { mutableStateOf<Confirm?>(null) }
     var categoryToDelete by remember { mutableStateOf<String?>(null) }
     var pendingNotify by remember { mutableStateOf<ReleaseInfo?>(null) }
-    val notifyPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        val release = pendingNotify
-        if (granted && release != null) notifyUpdate(context, release)
-    }
 
     LaunchedEffect(Unit) {
         if (UpdateStatus.checked) return@LaunchedEffect
@@ -239,13 +234,15 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
         }
         UpdateStatus.latestVersion = release.version
         UpdateStatus.releaseUrl = release.url
-        pendingNotify = release
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            notifyPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-        } else {
+        val activity = context as? Activity
+        val needsPermission = Build.VERSION.SDK_INT >= 33 &&
+                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
+        if (needsPermission && activity != null) {
+            NotificationPermission.request(activity) { granted ->
+                if (granted) notifyUpdate(context, release)
+            }
+        } else if (!needsPermission) {
             notifyUpdate(context, release)
         }
     }

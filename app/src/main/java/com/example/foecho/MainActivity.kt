@@ -21,6 +21,7 @@ import com.example.foecho.ui.screens.LocalEditRequest
 import com.example.foecho.ui.screens.LockScreen
 import com.example.foecho.ui.screens.SettingsScreen
 import com.example.foecho.ui.theme.FoEchoTheme
+import com.example.foecho.data.NotificationPermission
 
 enum class Screen { Home, Settings, Editor }
 
@@ -79,5 +80,14 @@ class MainActivity : FragmentActivity() {
                 }
             }
         }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        NotificationPermission.handleResult(requestCode, grantResults)
     }
 }
