@@ -133,6 +133,17 @@ import androidx.compose.material3.IconButton
 import com.example.foecho.data.EditedSegment
 import com.example.foecho.data.loadEdits
 import com.example.foecho.data.saveEdits
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import com.example.foecho.data.ReleaseInfo
+import com.example.foecho.data.UpdateStatus
+import com.example.foecho.data.checkForUpdate
+import com.example.foecho.data.installedVersion
+import com.example.foecho.data.isNewer
+import com.example.foecho.data.notifyUpdate
+import com.example.foecho.data.AppLock
 
 private val TealAccent = Color(0xFF2EC4B0)
 private val DangerRed = Color(0xFFD32F2F)
@@ -210,6 +221,34 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
     var selectedKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingMemoDeletes by remember { mutableStateOf<Set<String>>(emptySet()) }
     var confirm by remember { mutableStateOf<Confirm?>(null) }
+    var categoryToDelete by remember { mutableStateOf<String?>(null) }
+    var pendingNotify by remember { mutableStateOf<ReleaseInfo?>(null) }
+    val notifyPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val release = pendingNotify
+        if (granted && release != null) notifyUpdate(context, release)
+    }
+
+    LaunchedEffect(Unit) {
+        if (UpdateStatus.checked) return@LaunchedEffect
+        val release = checkForUpdate()
+        UpdateStatus.checked = true
+        if (release == null || !isNewer(release.version, installedVersion(context))) {
+            return@LaunchedEffect
+        }
+        UpdateStatus.latestVersion = release.version
+        UpdateStatus.releaseUrl = release.url
+        pendingNotify = release
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notifyPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            notifyUpdate(context, release)
+        }
+    }
 
     var searchOpen by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
@@ -325,6 +364,7 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
             }
             is Tab.User -> {
                 pick = Pick.Into(current.name)
+                AppLock.skipNextStop()
                 pickerLauncher.launch(arrayOf("audio/*"))
             }
             else -> Unit
@@ -448,6 +488,7 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
                 }
                 pendingMemoDeletes = keys.toSet()
                 val pendingIntent = MediaStore.createDeleteRequest(context.contentResolver, uris)
+                AppLock.skipNextStop()
                 deleteRequestLauncher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
             } else {
                 val deleted = keys.filter { key ->
@@ -505,6 +546,7 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
                         } else {
                             showNameDialog = false
                             pick = Pick.New(name)
+                            AppLock.skipNextStop()
                             pickerLauncher.launch(arrayOf("audio/*"))
                         }
                     }
@@ -611,6 +653,35 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
         )
     }
 
+    categoryToDelete?.let { name ->
+        val count = categories.firstOrNull { it.name == name }?.audios?.size ?: 0
+        AlertDialog(
+            onDismissRequest = { categoryToDelete = null },
+            title = { Text("Delete category") },
+            text = {
+                Text("Delete \"$name\"? Its $count audio files stay on your device.")
+            },
+            confirmButton = {
+                TextButton(
+                    colors = ButtonDefaults.textButtonColors(contentColor = DangerRed),
+                    onClick = {
+                        categories = categories.filterNot { it.name == name }
+                        saveCategories(context, categories)
+                        if (tab == Tab.User(name)) tab = Tab.All
+                        selectedKeys = emptySet()
+                        categoryToDelete = null
+                    }
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { categoryToDelete = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
     val tabs: List<Tab> = listOf(Tab.All, Tab.Raw, Tab.Edited, Tab.Favorites) +
             categories.map { Tab.User(it.name) } +
             Tab.Add
@@ -691,6 +762,11 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
                 rightDescription = "Sort",
                 onRightClick = { showSort = true }
             )
+            UpdateBanner(
+                current = remember(context) { installedVersion(context) },
+                latest = UpdateStatus.latestVersion,
+                url = UpdateStatus.releaseUrl
+            )
             Spacer(Modifier.height(12.dp))
             if (searchOpen) {
                 OutlinedTextField(
@@ -715,6 +791,9 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
                         newCategoryName = ""
                         showNameDialog = true
                     }
+                },
+                onLongSelect = { selected ->
+                    if (selected is Tab.User) categoryToDelete = selected.name
                 }
             )
             Spacer(Modifier.height(12.dp))
@@ -936,15 +1015,39 @@ private fun SortRow(label: String, selected: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun TabPills(tabs: List<Tab>, selected: Tab, onSelect: (Tab) -> Unit) {
+private fun TabPills(
+    tabs: List<Tab>,
+    selected: Tab,
+    onSelect: (Tab) -> Unit,
+    onLongSelect: (Tab) -> Unit
+) {
     LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         items(tabs) { tab ->
-            FilterChip(
-                selected = selected == tab,
-                onClick = { onSelect(tab) },
-                label = { Text(tab.label()) },
-                shape = RoundedCornerShape(50)
-            )
+            val isSelected = selected == tab
+            Surface(
+                modifier = Modifier.combinedClickable(
+                    onClick = { onSelect(tab) },
+                    onLongClick = { onLongSelect(tab) }
+                ),
+                shape = RoundedCornerShape(50),
+                color = if (isSelected) {
+                    MaterialTheme.colorScheme.secondaryContainer
+                } else {
+                    MaterialTheme.colorScheme.surface
+                },
+                contentColor = if (isSelected) {
+                    MaterialTheme.colorScheme.onSecondaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                },
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+            ) {
+                Text(
+                    text = tab.label(),
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+            }
         }
     }
 }
@@ -984,6 +1087,38 @@ private fun EmptyText(text: String) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Text(text = text, style = MaterialTheme.typography.bodyLarge)
     }
+}
+
+@Composable
+private fun UpdateBanner(current: String, latest: String?, url: String?) {
+    if (latest == null) return
+    val context = LocalContext.current
+    Card(
+        onClick = {
+            AppLock.skipNextStop()
+            url?.let { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it))) }
+        },
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = DangerRed,
+            contentColor = Color.White
+        )
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Text(
+                text = "Your version is outdated",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "You have $current. Version $latest is available. Tap to download.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+    }
+    Spacer(Modifier.height(12.dp))
 }
 
 @Composable

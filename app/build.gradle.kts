@@ -14,7 +14,7 @@ android {
         minSdk = 29
         targetSdk = 37
         versionCode = 1
-        versionName = "1.0"
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -51,4 +51,6 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
     implementation(libs.androidx.compose.material.icons.extended)
+    implementation(libs.androidx.biometric)
+    implementation(libs.androidx.lifecycle.runtime.compose)
 }
