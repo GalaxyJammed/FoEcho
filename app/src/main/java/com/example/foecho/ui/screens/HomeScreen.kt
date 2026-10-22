@@ -145,6 +145,10 @@ import com.example.foecho.data.isNewer
 import com.example.foecho.data.notifyUpdate
 import com.example.foecho.data.AppLock
 import com.example.foecho.data.NotificationPermission
+import com.example.foecho.data.rememberRelease
+import com.example.foecho.data.startUpdateDownload
+import com.example.foecho.data.InstallReady
+import com.example.foecho.data.installApk
 
 private val TealAccent = Color(0xFF2EC4B0)
 private val DangerRed = Color(0xFFD32F2F)
@@ -226,12 +230,14 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
     var pendingNotify by remember { mutableStateOf<ReleaseInfo?>(null) }
 
     LaunchedEffect(Unit) {
+        InstallReady.load(context)
         if (UpdateStatus.checked) return@LaunchedEffect
         val release = checkForUpdate()
         UpdateStatus.checked = true
         if (release == null || !isNewer(release.version, installedVersion(context))) {
             return@LaunchedEffect
         }
+        rememberRelease(context, release)
         UpdateStatus.latestVersion = release.version
         UpdateStatus.releaseUrl = release.url
         val activity = context as? Activity
@@ -764,6 +770,7 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
                 latest = UpdateStatus.latestVersion,
                 url = UpdateStatus.releaseUrl
             )
+            UpdateReadyDialog()
             Spacer(Modifier.height(12.dp))
             if (searchOpen) {
                 OutlinedTextField(
@@ -1090,32 +1097,65 @@ private fun EmptyText(text: String) {
 private fun UpdateBanner(current: String, latest: String?, url: String?) {
     if (latest == null) return
     val context = LocalContext.current
-    Card(
-        onClick = {
-            AppLock.skipNextStop()
-            url?.let { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it))) }
-        },
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = DangerRed,
-            contentColor = Color.White
-        )
-    ) {
-        Column(Modifier.padding(16.dp)) {
-            Text(
-                text = "Your version is outdated",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
+    Column {
+        Spacer(Modifier.height(12.dp))
+        Card(
+            onClick = { startUpdateDownload(context) },
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = DangerRed,
+                contentColor = Color.White
             )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = "You have $current. Version $latest is available. Tap to download.",
-                style = MaterialTheme.typography.bodyMedium
-            )
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text(
+                    text = "Your version is outdated",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "You have $current. Version $latest is available. Tap to download.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                url?.let {
+                    TextButton(
+                        onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it))) },
+                        colors = ButtonDefaults.textButtonColors(contentColor = Color.White)
+                    ) {
+                        Text("View ChangeNotes")
+                    }
+                }
+            }
         }
     }
-    Spacer(Modifier.height(12.dp))
+}
+
+@Composable
+private fun UpdateReadyDialog() {
+    val context = LocalContext.current
+    val ready = InstallReady.current ?: return
+    AlertDialog(
+        onDismissRequest = { InstallReady.dismissForNow() },
+        title = { Text("Update ready") },
+        text = {
+            Text("FoEcho ${ready.version} has finished downloading. Install it now?")
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                InstallReady.finish(context)
+                installApk(context, ready.uri)
+            }) {
+                Text("Install")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { InstallReady.dismissForNow() }) {
+                Text("Later")
+            }
+        }
+    )
 }
 
 @Composable

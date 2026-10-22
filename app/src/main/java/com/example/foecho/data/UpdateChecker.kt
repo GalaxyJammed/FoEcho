@@ -1,6 +1,7 @@
 package com.example.foecho.data
 
 import android.Manifest
+import android.app.Activity
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -12,6 +13,7 @@ import android.os.Build
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
@@ -19,16 +21,19 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
-import android.app.Activity
-import androidx.core.app.ActivityCompat
 
 private const val RELEASES_URL = "https://api.github.com/repos/GalaxyJammed/FoEcho/releases/latest"
-private const val PREFS = "foecho_updates"
+internal const val UPDATE_PREFS = "foecho_updates"
+internal const val KEY_DOWNLOAD_ID = "download_id"
 private const val KEY_NOTIFIED = "notified_version"
-private const val CHANNEL_ID = "foecho_updates"
+private const val KEY_PENDING_VERSION = "pending_version"
+private const val KEY_PENDING_URL = "pending_url"
+private const val KEY_PENDING_APK = "pending_apk"
+internal const val CHANNEL_ID = "foecho_updates"
+internal const val ACTION_DOWNLOAD_UPDATE = "com.example.foecho.DOWNLOAD_UPDATE"
 private const val NOTIFICATION_ID = 1001
 
-data class ReleaseInfo(val version: String, val url: String)
+data class ReleaseInfo(val version: String, val url: String, val apkUrl: String?)
 
 object UpdateStatus {
     var checked = false
@@ -46,7 +51,14 @@ suspend fun checkForUpdate(): ReleaseInfo? = withContext(Dispatchers.IO) {
         try {
             if (conn.responseCode != 200) return@runCatching null
             val json = JSONObject(conn.inputStream.bufferedReader().use { it.readText() })
-            ReleaseInfo(json.getString("tag_name"), json.getString("html_url"))
+            val apk = json.optJSONArray("assets")?.let { assets ->
+                (0 until assets.length())
+                    .map { assets.getJSONObject(it) }
+                    .firstOrNull { it.optString("name").endsWith(".apk", ignoreCase = true) }
+                    ?.optString("browser_download_url")
+                    ?.takeIf { it.isNotBlank() }
+            }
+            ReleaseInfo(json.getString("tag_name"), json.getString("html_url"), apk)
         } finally {
             conn.disconnect()
         }
@@ -68,31 +80,57 @@ fun isNewer(latest: String, current: String): Boolean {
     return false
 }
 
+fun rememberRelease(context: Context, release: ReleaseInfo) {
+    context.getSharedPreferences(UPDATE_PREFS, Context.MODE_PRIVATE).edit()
+        .putString(KEY_PENDING_VERSION, release.version)
+        .putString(KEY_PENDING_URL, release.url)
+        .putString(KEY_PENDING_APK, release.apkUrl)
+        .apply()
+}
+
+fun pendingRelease(context: Context): ReleaseInfo? {
+    val prefs = context.getSharedPreferences(UPDATE_PREFS, Context.MODE_PRIVATE)
+    val version = prefs.getString(KEY_PENDING_VERSION, null) ?: return null
+    val url = prefs.getString(KEY_PENDING_URL, null) ?: return null
+    return ReleaseInfo(version, url, prefs.getString(KEY_PENDING_APK, null))
+}
+
+internal fun ensureChannel(context: Context) {
+    if (Build.VERSION.SDK_INT >= 26) {
+        context.getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(CHANNEL_ID, "App updates", NotificationManager.IMPORTANCE_DEFAULT)
+        )
+    }
+}
+
 fun notifyUpdate(context: Context, release: ReleaseInfo) {
-    val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    val prefs = context.getSharedPreferences(UPDATE_PREFS, Context.MODE_PRIVATE)
     if (prefs.getString(KEY_NOTIFIED, null) == release.version) return
     if (Build.VERSION.SDK_INT >= 33 &&
         ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
         PackageManager.PERMISSION_GRANTED
     ) return
 
+    ensureChannel(context)
     val manager = context.getSystemService(NotificationManager::class.java)
-    if (Build.VERSION.SDK_INT >= 26) {
-        manager.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "App updates", NotificationManager.IMPORTANCE_DEFAULT)
-        )
-    }
-    val openIntent = PendingIntent.getActivity(
+    val downloadIntent = Intent(context, UpdateActionReceiver::class.java)
+        .setAction(ACTION_DOWNLOAD_UPDATE)
+    val downloadPending = PendingIntent.getBroadcast(
+        context, 0, downloadIntent, PendingIntent.FLAG_IMMUTABLE
+    )
+    val notesPending = PendingIntent.getActivity(
         context,
-        0,
+        1,
         Intent(Intent.ACTION_VIEW, Uri.parse(release.url)),
         PendingIntent.FLAG_IMMUTABLE
     )
     val notification = NotificationCompat.Builder(context, CHANNEL_ID)
         .setSmallIcon(android.R.drawable.stat_sys_download_done)
-        .setContentTitle("FoEcho update available")
-        .setContentText("Version ${release.version} is ready to download.")
-        .setContentIntent(openIntent)
+        .setContentTitle("FoEcho ${release.version} is available")
+        .setContentText("Tap Download to get the update.")
+        .setContentIntent(downloadPending)
+        .addAction(0, "Download", downloadPending)
+        .addAction(0, "View ChangeNotes", notesPending)
         .setAutoCancel(true)
         .build()
     manager.notify(NOTIFICATION_ID, notification)
