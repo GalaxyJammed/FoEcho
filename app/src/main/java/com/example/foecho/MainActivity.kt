@@ -22,6 +22,8 @@ import com.example.foecho.ui.screens.LockScreen
 import com.example.foecho.ui.screens.SettingsScreen
 import com.example.foecho.ui.theme.FoEchoTheme
 import com.example.foecho.data.NotificationPermission
+import android.content.Intent
+import com.example.foecho.data.FilePicker
 
 enum class Screen { Home, Settings, Editor }
 
@@ -80,6 +82,11 @@ class MainActivity : FragmentActivity() {
                 }
             }
         }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        FilePicker.handleResult(requestCode, resultCode, data)
     }
 
     override fun onRequestPermissionsResult(

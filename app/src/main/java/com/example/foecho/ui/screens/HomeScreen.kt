@@ -149,6 +149,7 @@ import com.example.foecho.data.rememberRelease
 import com.example.foecho.data.startUpdateDownload
 import com.example.foecho.data.InstallReady
 import com.example.foecho.data.installApk
+import com.example.foecho.data.FilePicker
 
 private val TealAccent = Color(0xFF2EC4B0)
 private val DangerRed = Color(0xFFD32F2F)
@@ -327,24 +328,25 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
         searchQuery = ""
     }
 
-    val pickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+    val onPicked: (List<Uri>) -> Unit = { uris ->
         val target = pick
         pick = null
-        if (uris.isEmpty() || target == null) return@rememberLauncherForActivityResult
-        uris.forEach { persistAccess(context, it) }
-        val picked = uris.map { toAddedAudio(context, it) }
-        categories = when (target) {
-            is Pick.New -> categories + AudioCategory(target.name, picked)
-            is Pick.Into -> categories.map { category ->
-                if (category.name == target.name) {
-                    category.copy(audios = (category.audios + picked).distinctBy { it.uri })
-                } else {
-                    category
+        if (uris.isNotEmpty() && target != null) {
+            uris.forEach { persistAccess(context, it) }
+            val picked = uris.map { toAddedAudio(context, it) }
+            categories = when (target) {
+                is Pick.New -> categories + AudioCategory(target.name, picked)
+                is Pick.Into -> categories.map { category ->
+                    if (category.name == target.name) {
+                        category.copy(audios = (category.audios + picked).distinctBy { it.uri })
+                    } else {
+                        category
+                    }
                 }
             }
+            saveCategories(context, categories)
+            if (target is Pick.New) tab = Tab.User(target.name)
         }
-        saveCategories(context, categories)
-        if (target is Pick.New) tab = Tab.User(target.name)
     }
 
     val deleteRequestLauncher = rememberLauncherForActivityResult(
@@ -368,7 +370,7 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
             is Tab.User -> {
                 pick = Pick.Into(current.name)
                 AppLock.skipNextStop()
-                pickerLauncher.launch(arrayOf("audio/*"))
+                FilePicker.open(context as Activity, onPicked)
             }
             else -> Unit
         }
@@ -550,7 +552,7 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
                             showNameDialog = false
                             pick = Pick.New(name)
                             AppLock.skipNextStop()
-                            pickerLauncher.launch(arrayOf("audio/*"))
+                            FilePicker.open(context as Activity, onPicked)
                         }
                     }
                 ) {
