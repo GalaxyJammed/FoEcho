@@ -18,6 +18,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -26,13 +27,17 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.example.foecho.data.Appearance
+import java.util.Random
 
 @Composable
 fun ShieldCard(
     modifier: Modifier = Modifier,
+    forceScatter: Boolean = false,
     content: @Composable ColumnScope.() -> Unit
 ) {
     val isDark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val seed = remember { Random().nextInt() }
     Card(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(16.dp),
@@ -41,7 +46,12 @@ fun ShieldCard(
         ),
         border = BorderStroke(1.dp, if (isDark) Color(0x33FFFFFF) else Color(0x66000000))
     ) {
-        Column(content = content)
+        Box {
+            Column(Modifier.fillMaxWidth(), content = content)
+            if (Appearance.scatter) {
+                ScatterDecoration(seed = seed, force = forceScatter)
+            }
+        }
     }
 }
 
@@ -55,7 +65,7 @@ fun ScreenHeader(
     rightDescription: String = "",
     onRightClick: () -> Unit = {}
 ) {
-    ShieldCard {
+    ShieldCard(forceScatter = true) {
         Box(Modifier.fillMaxWidth().padding(vertical = 12.dp, horizontal = 8.dp)) {
             IconButton(
                 onClick = onNavClick,

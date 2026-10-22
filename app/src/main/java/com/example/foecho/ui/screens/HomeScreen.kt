@@ -150,6 +150,14 @@ import com.example.foecho.data.startUpdateDownload
 import com.example.foecho.data.InstallReady
 import com.example.foecho.data.installApk
 import com.example.foecho.data.FilePicker
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.runtime.compositionLocalOf
 
 private val TealAccent = Color(0xFF2EC4B0)
 private val DangerRed = Color(0xFFD32F2F)
@@ -193,6 +201,7 @@ private sealed interface ListRow {
     }
 }
 
+val LocalScreenActive = compositionLocalOf { true }
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(onSettingsClick: () -> Unit) {
@@ -285,13 +294,23 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
         (memos.map { it.toItem() } + categories.flatMap { c -> c.audios.map { it.toItem() } })
             .distinctBy { it.key }
     }
-    val allMemoItems = memos.map { it.toItem() }
-        .applySort(sortOption, preciseMs)
-        .matching(searchQuery)
-    val favoriteItems = sourceItems
-        .filter { it.key in favorites }
-        .applySort(sortOption, preciseMs)
-        .matching(searchQuery)
+    val allMemoItems = remember(memos, sortOption, preciseMs, searchQuery) {
+        memos.map { it.toItem() }.applySort(sortOption, preciseMs).matching(searchQuery)
+    }
+    val favoriteItems = remember(sourceItems, favorites, sortOption, preciseMs, searchQuery) {
+        sourceItems.filter { it.key in favorites }.applySort(sortOption, preciseMs).matching(searchQuery)
+    }
+    val userLists = remember(categories, sortOption, preciseMs, searchQuery) {
+        categories.associate { c ->
+            c.name to c.audios.map { it.toItem() }.applySort(sortOption, preciseMs).matching(searchQuery)
+        }
+    }
+    val editedItems = remember(memos, editedIds, sortOption, preciseMs, searchQuery) {
+        memos.filter { it.id.toString() in editedIds }
+            .map { it.toItem() }
+            .applySort(sortOption, preciseMs)
+            .matching(searchQuery)
+    }
 
     LaunchedEffect(granted, memosVersion) {
         if (granted) memos = loadVoiceMemos(context)
@@ -803,8 +822,22 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
                 }
             )
             Spacer(Modifier.height(12.dp))
-            Box(Modifier.weight(1f)) {
-                when (val current = tab) {
+            AnimatedContent(
+                targetState = tab,
+                modifier = Modifier.weight(1f),
+                transitionSpec = {
+                    val forward = tabs.indexOf(targetState) > tabs.indexOf(initialState)
+                    val enter = slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { full ->
+                        if (forward) full else -full
+                    } + fadeIn(tween(200))
+                    val exit = slideOutHorizontally(tween(260, easing = FastOutSlowInEasing)) { full ->
+                        if (forward) -full else full
+                    } + fadeOut(tween(200))
+                    enter togetherWith exit
+                },
+                label = "tabSlide"
+            ) { current ->
+                when (current) {
                     Tab.All, Tab.Raw -> {
                         if (granted) {
                             AudioList(
@@ -827,11 +860,7 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
                         }
                     }
                     Tab.Edited -> AudioList(
-                        list = memos
-                            .filter { it.id.toString() in editedIds }
-                            .map { it.toItem() }
-                            .applySort(sortOption, preciseMs)
-                            .matching(searchQuery),
+                        list = editedItems,
                         emptyText = emptyFor("No edited audios yet."),
                         selectionMode = selectionMode,
                         selectedKeys = selectedKeys,
@@ -862,12 +891,7 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
                     )
                     Tab.Add -> EmptyText("Tap Add to create a category.")
                     is Tab.User -> AudioList(
-                        list = categories.firstOrNull { it.name == current.name }
-                            ?.audios
-                            .orEmpty()
-                            .map { it.toItem() }
-                            .applySort(sortOption, preciseMs)
-                            .matching(searchQuery),
+                        list = userLists[current.name].orEmpty(),
                         emptyText = emptyFor("No audio files in this category yet."),
                         selectionMode = selectionMode,
                         selectedKeys = selectedKeys,
@@ -1230,6 +1254,11 @@ private fun AudioList(
         }.onFailure {
             newPlayer.release()
         }
+    }
+
+    val screenActive = LocalScreenActive.current
+    LaunchedEffect(screenActive) {
+        if (!screenActive) stopPlayback()
     }
 
     LaunchedEffect(playingKey, isPaused) {
