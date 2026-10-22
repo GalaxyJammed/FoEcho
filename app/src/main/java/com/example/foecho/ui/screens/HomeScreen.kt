@@ -158,6 +158,9 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.runtime.compositionLocalOf
+import com.example.foecho.data.MediaDelete
+import androidx.compose.material.icons.filled.Launch
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
 
 private val TealAccent = Color(0xFF2EC4B0)
 private val DangerRed = Color(0xFFD32F2F)
@@ -368,18 +371,6 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
         }
     }
 
-    val deleteRequestLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartIntentSenderForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            memos = memos.filterNot { it.id.toString() in pendingMemoDeletes }
-            edits = edits.filterNot { it.outputId() in pendingMemoDeletes }
-            saveEdits(context, edits)
-        }
-        pendingMemoDeletes = emptySet()
-        selectedKeys = emptySet()
-    }
-
     val openAddFiles: () -> Unit = {
         when (val current = tab) {
             Tab.Add -> {
@@ -506,14 +497,20 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
             selectedKeys = emptySet()
         } else {
             val keys = selectedKeys.toList()
+            val ids = keys.toSet()
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val uris = keys.map {
                     ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, it.toLong())
                 }
-                pendingMemoDeletes = keys.toSet()
                 val pendingIntent = MediaStore.createDeleteRequest(context.contentResolver, uris)
-                AppLock.skipNextStop()
-                deleteRequestLauncher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
+                MediaDelete.launch(context as Activity, pendingIntent.intentSender) { deleted ->
+                    if (deleted) {
+                        memos = memos.filterNot { it.id.toString() in ids }
+                        edits = edits.filterNot { it.outputId() in ids }
+                        saveEdits(context, edits)
+                    }
+                    selectedKeys = emptySet()
+                }
             } else {
                 val deleted = keys.filter { key ->
                     runCatching {
@@ -531,6 +528,30 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
                     Toast.makeText(context, "Some files couldn't be deleted", Toast.LENGTH_SHORT).show()
                 }
                 selectedKeys = emptySet()
+            }
+        }
+    }
+
+    val openEditor = LocalEditRequest.current
+    val jumpToOriginal: () -> Unit = {
+        val key = selectedKeys.firstOrNull()
+        val seg = edits.firstOrNull { it.outputId() == key }
+        if (seg == null) {
+            Toast.makeText(context, "Part not found", Toast.LENGTH_SHORT).show()
+        } else {
+            val exists = runCatching {
+                context.contentResolver.openFileDescriptor(Uri.parse(seg.sourceUri), "r")?.use { true }
+            }.getOrNull() == true
+            if (!exists) {
+                Toast.makeText(context, "The original file no longer exists", Toast.LENGTH_SHORT).show()
+            } else {
+                val original = memos.firstOrNull {
+                    ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, it.id).toString() == seg.sourceUri
+                }
+                val name = original?.name ?: seg.sourceName
+                val date = original?.dateAdded?.times(1000L) ?: 0L
+                selectedKeys = emptySet()
+                openEditor(seg.sourceUri, name, date)
             }
         }
     }
@@ -822,26 +843,17 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
                 }
             )
             Spacer(Modifier.height(12.dp))
-            AnimatedContent(
-                targetState = tab,
-                modifier = Modifier.weight(1f),
-                transitionSpec = {
-                    val forward = tabs.indexOf(targetState) > tabs.indexOf(initialState)
-                    val enter = slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { full ->
-                        if (forward) full else -full
-                    } + fadeIn(tween(200))
-                    val exit = slideOutHorizontally(tween(260, easing = FastOutSlowInEasing)) { full ->
-                        if (forward) -full else full
-                    } + fadeOut(tween(200))
-                    enter togetherWith exit
-                },
-                label = "tabSlide"
-            ) { current ->
-                when (current) {
+            Box(Modifier.weight(1f)) {
+                when (val current = tab) {
                     Tab.All, Tab.Raw -> {
                         if (granted) {
+                            val rawItems = if (tab == Tab.Raw) {
+                                allMemoItems.filter { it.key !in editedIds }
+                            } else {
+                                allMemoItems
+                            }
                             AudioList(
-                                list = allMemoItems,
+                                list = rawItems,
                                 emptyText = emptyFor("No audio files found on this device."),
                                 selectionMode = selectionMode,
                                 selectedKeys = selectedKeys,
@@ -853,7 +865,8 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
                                 onPlayingChange = { playingAny = it },
                                 favorites = favorites,
                                 sortKey = sortOption,
-                                durations = preciseMs
+                                durations = preciseMs,
+                                listKey = tab
                             )
                         } else {
                             PermissionCard(onAllow = { permissionLauncher.launch(permission) })
@@ -872,7 +885,8 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
                         onPlayingChange = { playingAny = it },
                         favorites = favorites,
                         sortKey = sortOption,
-                        durations = preciseMs
+                        durations = preciseMs,
+                        listKey = tab
                     )
                     Tab.Favorites -> AudioList(
                         list = favoriteItems,
@@ -887,7 +901,8 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
                         onPlayingChange = { playingAny = it },
                         favorites = favorites,
                         sortKey = sortOption,
-                        durations = preciseMs
+                        durations = preciseMs,
+                        listKey = tab
                     )
                     Tab.Add -> EmptyText("Tap Add to create a category.")
                     is Tab.User -> AudioList(
@@ -903,7 +918,8 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
                         onPlayingChange = { playingAny = it },
                         favorites = favorites,
                         sortKey = sortOption,
-                        durations = preciseMs
+                        durations = preciseMs,
+                        listKey = tab
                     )
                 }
             }
@@ -937,13 +953,24 @@ fun HomeScreen(onSettingsClick: () -> Unit) {
             sideColor = if (!recording && selectionMode) FavoriteYellow else null,
             sideContent = if (!recording && selectionMode) Color.Black else null,
             leftIcon = when {
-                recording || selectionMode -> null
+                recording -> null
+                selectionMode && tab == Tab.Edited && selectedKeys.size == 1 ->
+                    Icons.AutoMirrored.Filled.OpenInNew
+                selectionMode -> null
                 searchOpen -> Icons.Filled.Close
                 else -> Icons.Filled.Search
             },
-            leftLabel = if (searchOpen) "Close search" else "Search",
+            leftLabel = when {
+                selectionMode -> "Jump to original"
+                searchOpen -> "Close search"
+                else -> "Search"
+            },
             onLeftClick = {
-                if (searchOpen) closeSearch() else searchOpen = true
+                when {
+                    selectionMode -> jumpToOriginal()
+                    searchOpen -> closeSearch()
+                    else -> searchOpen = true
+                }
             }
         )
     }
@@ -1196,11 +1223,12 @@ private fun AudioList(
     onPlayingChange: (Boolean) -> Unit,
     favorites: Set<String>,
     sortKey: SortOption,
-    durations: Map<String, Long>
+    durations: Map<String, Long>,
+    listKey: Any
 ) {
     val context = LocalContext.current
     val onEdit = LocalEditRequest.current
-    val listState = rememberLazyListState()
+    val listState = remember(listKey) { LazyListState(0, 0) }
     var playingKey by remember { mutableStateOf<String?>(null) }
     var isPaused by remember { mutableStateOf(false) }
     var position by remember { mutableStateOf(0L) }
@@ -1578,3 +1606,5 @@ private fun formatDuration(ms: Long): String {
 
 private fun EditedSegment.outputId(): String =
     Uri.parse(outputUri).lastPathSegment.orEmpty()
+
+private fun EditedSegment.sourceUriString(): String = sourceUri

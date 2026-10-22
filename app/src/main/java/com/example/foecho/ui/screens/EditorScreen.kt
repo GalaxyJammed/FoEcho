@@ -329,16 +329,19 @@ fun EditorScreen(uri: String, name: String, dateCreated: Long, onBack: () -> Uni
                 TextButton(
                     colors = ButtonDefaults.textButtonColors(contentColor = DangerRed),
                     onClick = {
+                        val target = seg
                         deleteTarget = null
-                        if (segPlayingId == seg.id) stopSeg()
+                        if (segPlayingId == target.id) stopSeg()
                         scope.launch {
                             val deleted = withContext(Dispatchers.IO) {
-                                runCatching {
-                                    context.contentResolver.delete(Uri.parse(seg.outputUri), null, null) > 0
-                                }.getOrDefault(false)
+                                try {
+                                    context.contentResolver.delete(Uri.parse(target.outputUri), null, null) > 0
+                                } catch (e: Exception) {
+                                    false
+                                }
                             }
                             if (deleted) {
-                                allEdits = allEdits.filterNot { it.id == seg.id }
+                                allEdits = allEdits.filterNot { it.id == target.id }
                                 saveEdits(context, allEdits)
                                 Toast.makeText(context, "Part deleted", Toast.LENGTH_SHORT).show()
                             } else {
