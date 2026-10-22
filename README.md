@@ -114,7 +114,7 @@ FoEcho gathers all your audio in one place: your voice memos, the recordings you
 ## ❓ Frequently Asked Questions
 
 ### Does FoEcho work offline?
-Yes. It needs no internet connection at any point.
+Yes. It needs no internet connection at any point except to notify about updates.
 
 ### Will editing change my original recording?
 No. Each part is saved as a new file. The original stays as it was.
