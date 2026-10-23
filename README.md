@@ -162,3 +162,6 @@ Android 10 (API level 29) or newer.
 - When reporting a bug, include your Android version, the audio file type, and what the screen shows.
 
 </div>
+
+## 💡 Inspirations
+- Inspired by a friend of mine that wanted this app. You'll see random features catered to my friend (that will be toggable in Settings)
