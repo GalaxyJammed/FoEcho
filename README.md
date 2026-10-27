@@ -20,7 +20,7 @@
 FoEcho gathers all your audio in one place: your voice memos, the recordings you make in the app, and any audio files you add. You can sort, search and favourite them, and split a long recording into named parts. Each part is saved as its own file. Everything stays on your device.
 
 <div align="center">
-  <img width="100" height="100" alt="FoEcho icon" src="https://github.com/user-attachments/assets/d8384bbc-acbd-4ce7-9add-00ea17468606" />
+  <img width="100" height="100" alt="FoEcho icon" src="https://github.com/user-attachments/assets/80b1ef3e-670f-498b-a752-a2279e2a41d0" />
   <br>
   <em>"Every voice, in its place"</em>
 </div>
