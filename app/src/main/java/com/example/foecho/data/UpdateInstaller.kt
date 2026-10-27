@@ -32,7 +32,21 @@ object InstallReady {
         val prefs = context.getSharedPreferences(UPDATE_PREFS, Context.MODE_PRIVATE)
         val uri = prefs.getString(KEY_READY_URI, null) ?: return
         val version = prefs.getString(KEY_READY_VERSION, "") ?: ""
+        if (!isStillNeeded(context, uri, version)) {
+            finish(context)
+            return
+        }
         current = ReadyInstall(uri, version)
+    }
+
+    private fun isStillNeeded(context: Context, uri: String, version: String): Boolean {
+        val alreadyInstalled = version.isNotBlank() &&
+                !isNewer(version, installedVersion(context))
+        if (alreadyInstalled) return false
+        val apkStillThere = runCatching {
+            context.contentResolver.openFileDescriptor(Uri.parse(uri), "r")?.use { true }
+        }.getOrNull() == true
+        return apkStillThere
     }
 
     fun dismissForNow() {
